@@ -4,6 +4,8 @@ const multer = require("multer");
 const path = require("path");
 const app = express();
 const cors = require("cors");
+const cloudinary = require("./cloudinary");
+const upload = require("./upload");
 // Connect to MongoDB
 const DB_Connection = async () => {
   await mongoose
@@ -18,20 +20,38 @@ const DB_Connection = async () => {
 
 DB_Connection();
 
-const tourSchema = new mongoose.Schema({
-  name: String,
-  images: [String],
+const hotspotSchema = new mongoose.Schema({
+  pitch: { type: Number, required: true },
+  yaw: { type: Number, required: true },
+  roomId: { type: String, required: true },
+  description: { type: String, required: true },
+  targetImage: { type: String, required: true },
+});
+
+const imageHotspotsSchema = new mongoose.Schema({
+  imageUrl: { type: String, required: true },
+  hotspots: [hotspotSchema],
+});
+
+const fileSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  url: { type: String, required: true },
+  size: { type: Number, required: true },
+  type: { type: String, required: true },
+});
+
+const formDataSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  images: [fileSchema],
   hotspots: [
     {
-      pitch: Number,
-      yaw: Number,
-      roomId: String,
-      description: String,
+      type: imageHotspotsSchema,
+      required: true,
     },
   ],
 });
 
-const Tour = mongoose.model("Tour", tourSchema);
+const VirtualTourData = mongoose.model("VirtualTourData", formDataSchema);
 
 app.use(
   cors({
@@ -39,49 +59,81 @@ app.use(
   })
 );
 
-// Set up Multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  },
-});
-
-const upload = multer({ storage: storage });
-
-// Create a new virtual tour
-app.post("/api/tours", upload.array("images"), async (req, res) => {
+app.post("/upload", upload.array("images", 10), async (req, res) => {
   try {
+    // Extract name and hotspots
     const { name, hotspots } = req.body;
-    const imagePaths = req.files.map((file) => file.path);
 
-    const newTour = new Tour({
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: "No images uploaded" });
+    }
+
+    // Upload files to Cloudinary
+    const imageUploads = await Promise.all(
+      req.files.map((file) => {
+        return new Promise((resolve, reject) => {
+          const uploadStream = cloudinary.uploader.upload_stream(
+            { folder: "virtual_tour" },
+            (error, result) => {
+              if (error) return reject(error);
+              resolve({
+                name: file.originalname,
+                url: result.secure_url,
+                size: file.size,
+                type: file.mimetype,
+              });
+            }
+          );
+          uploadStream.end(file.buffer);
+        });
+      })
+    );
+
+    // Parse hotspots JSON
+    const parsedHotspots = JSON.parse(hotspots);
+
+    // Map hotspots to uploaded images
+    const mappedHotspots = Object.entries(parsedHotspots).map(
+      ([imageName, hs]) => {
+        const imageUrl = imageUploads.find(
+          (img) => img.name === imageName
+        )?.url;
+        if (!imageUrl) {
+          throw new Error(`Image URL not found for: ${imageName}`);
+        }
+        return { imageUrl, hotspots: hs };
+      }
+    );
+
+    // Form data to save
+    const formData = {
       name,
-      images: imagePaths,
-      hotspots: JSON.parse(hotspots),
+      images: imageUploads,
+      hotspots: mappedHotspots,
+    };
+
+    // Save to database
+    const savedData = await VirtualTourData.create(formData);
+    res
+      .status(200)
+      .json({ message: "Data saved successfully!", data: savedData });
+  } catch (error) {
+    console.error("Error saving data:", error);
+    res.status(500).json({
+      message: "Failed to save data",
+      error: error.message || "Unknown error",
     });
-
-    await newTour.save();
-    res.status(201).json({ message: "Tour created successfully!" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
 });
 
-// Get all tours
-app.get("/api/tours", async (req, res) => {
+app.get("/api/virtual-tour", async (req, res) => {
   try {
-    const tours = await Tour.find();
-    res.json(tours);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const tourData = await VirtualTourData.find({});
+    res.json(tourData);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch virtual tour data" });
   }
 });
-
-// Serve static files (images)
-app.use("/uploads", express.static("uploads"));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

@@ -10,20 +10,23 @@ import {
   Box,
   ImageList,
   ImageListItem,
+  Backdrop,
+  CircularProgress,
 } from "@mui/material";
+import Loading from "./Loading";
 
 const UploadForm = () => {
   const [tourName, setTourName] = useState("");
   const [images, setImages] = useState([]);
-  const [hotspots, setHotspots] = useState([]);
+  const [hotspots, setHotspots] = useState({});
+  const [loading, setLoading] = useState(false);
   const [currentHotspot, setCurrentHotspot] = useState({
     pitch: "",
     yaw: "",
     roomId: "",
     description: "",
-    targetImage: "", // or targetScene
+    targetImage: "",
   });
-
   const [selectedImage, setSelectedImage] = useState(null);
   const [viewer, setViewer] = useState(null);
 
@@ -38,7 +41,7 @@ const UploadForm = () => {
 
       const viewerInstance = new Marzipano.Viewer(viewerElement);
       const source = Marzipano.ImageUrlSource.fromString(
-        URL.createObjectURL(selectedImage)
+        URL.createObjectURL(selectedImage.file)
       );
       const geometry = new Marzipano.EquirectGeometry([{ tileSize: 512 }]);
       const view = new Marzipano.RectilinearView({
@@ -50,8 +53,9 @@ const UploadForm = () => {
       const scene = viewerInstance.createScene({ source, geometry, view });
       scene.switchTo();
 
-      // Add hotspots to the viewer
-      hotspots.forEach((hotspot) => {
+      // Get hotspots for the selected image
+      const imageHotspots = hotspots[selectedImage.name] || [];
+      imageHotspots.forEach((hotspot) => {
         const hotspotElement = document.createElement("div");
         hotspotElement.classList.add("hotspot");
         hotspotElement.style.width = "20px";
@@ -61,9 +65,12 @@ const UploadForm = () => {
         hotspotElement.style.cursor = "pointer";
 
         hotspotElement.addEventListener("click", () => {
-          const targetImageIndex = parseInt(hotspot.targetImage, 10);
-          if (!isNaN(targetImageIndex)) {
-            setSelectedImage(images[targetImageIndex]);
+          const targetImage = images.find(
+            (img) => img.name === hotspot.targetImage
+          );
+          console.log(targetImage);
+          if (targetImage) {
+            setSelectedImage(targetImage);
           }
         });
 
@@ -78,10 +85,13 @@ const UploadForm = () => {
   }, [selectedImage, hotspots]);
 
   const handleImageChange = (e) => {
-    const files = Array.from(e.target.files);
+    const files = Array.from(e.target.files).map((file, index) => ({
+      file,
+      name: file.name || `Image ${index + 1}`,
+    }));
     setImages(files);
     if (files.length > 0) {
-      setSelectedImage(files[0]); // Initially select the first image
+      setSelectedImage(files[0]);
     }
   };
 
@@ -107,7 +117,16 @@ const UploadForm = () => {
   };
 
   const addHotspot = () => {
-    setHotspots([...hotspots, currentHotspot]);
+    if (!selectedImage) return;
+
+    setHotspots((prevHotspots) => ({
+      ...prevHotspots,
+      [selectedImage.name]: [
+        ...(prevHotspots[selectedImage.name] || []),
+        currentHotspot,
+      ],
+    }));
+
     setCurrentHotspot({
       pitch: "",
       yaw: "",
@@ -118,30 +137,28 @@ const UploadForm = () => {
   };
 
   const handleSubmit = async (e) => {
+    setLoading(true);
     e.preventDefault();
 
     const formData = new FormData();
     formData.append("name", tourName);
     images.forEach((image) => {
-      formData.append("images", image);
+      formData.append("images", image.file);
     });
     formData.append("hotspots", JSON.stringify(hotspots));
-
+    console.log("form data", ...formData);
     try {
-      const res = await axios.post(
-        "http://localhost:5000/api/tours",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        }
-      );
-
+      const res = await axios.post("http://localhost:5000/upload", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+      setLoading(false);
       console.log(res.data);
       alert("Tour created successfully!");
     } catch (error) {
       console.error(error);
+      setLoading(false);
       alert("Failed to create tour.");
     }
   };
@@ -178,6 +195,7 @@ const UploadForm = () => {
                 />
               </Button>
             </Grid>
+
             {images.length > 0 && (
               <Grid item xs={12}>
                 <Typography variant="h6" gutterBottom>
@@ -233,7 +251,7 @@ const UploadForm = () => {
                       }}
                     >
                       <img
-                        src={URL.createObjectURL(image)}
+                        src={URL.createObjectURL(image.file)}
                         alt={`Image ${index + 1}`}
                         style={{
                           width: "100%",
@@ -294,7 +312,6 @@ const UploadForm = () => {
                 required
               />
             </Grid>
-
             <Grid item xs={12}>
               <TextField
                 fullWidth
@@ -306,7 +323,6 @@ const UploadForm = () => {
                 required
               />
             </Grid>
-
             <Grid item xs={12}>
               <TextField
                 fullWidth
@@ -315,61 +331,47 @@ const UploadForm = () => {
                 variant="outlined"
                 value={currentHotspot.description}
                 onChange={handleHotspotChange}
+                required
               />
             </Grid>
-
             <Grid item xs={12}>
               <TextField
-                select
+                fullWidth
                 label="Target Image"
                 name="targetImage"
-                onChange={handleHotspotChange}
-                SelectProps={{ native: true }}
-                fullWidth
                 variant="outlined"
+                value={currentHotspot.targetImage}
+                onChange={handleHotspotChange}
                 required
-              >
-                <option value="">Select Target Image</option>
-                {images.map((image, index) => (
-                  <option key={index} value={index}>
-                    {image.name || `Image ${index + 1}`}
-                  </option>
-                ))}
-              </TextField>
+              />
             </Grid>
-
             <Grid item xs={12}>
-              <Button variant="outlined" onClick={addHotspot} fullWidth>
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={addHotspot}
+                disabled={!selectedImage}
+              >
                 Add Hotspot
               </Button>
             </Grid>
 
             <Grid item xs={12}>
-              <Button
-                variant="contained"
-                color="primary"
-                type="submit"
-                fullWidth
-              >
+              <Button variant="contained" type="submit" color="secondary">
                 Create Tour
               </Button>
             </Grid>
           </Grid>
         </form>
-
-        <Box mt={4}>
-          <Typography variant="h6">Hotspots Preview</Typography>
-          <ul>
-            {hotspots.map((hotspot, index) => (
-              <li key={index}>
-                Pitch: {hotspot.pitch}, Yaw: {hotspot.yaw}, Room ID:{" "}
-                {hotspot.roomId}, Description: {hotspot.description}, Target
-                Image:{hotspot.targetImage}
-              </li>
-            ))}
-          </ul>
-        </Box>
       </Paper>
+      {loading && (
+        <Backdrop
+          sx={{ color: "#fff", zIndex: (theme) => theme.zIndex.drawer + 1 }}
+          open={loading}
+        >
+          <CircularProgress />
+        </Backdrop>
+      )}
     </Box>
   );
 };
